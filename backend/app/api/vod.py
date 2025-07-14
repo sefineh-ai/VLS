@@ -1,10 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Body, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.db.session import SessionLocal
 from app.models import VOD, User, UserRole, Stream
 from app.schemas.vod import VODRead
 from app.services.auth import get_current_user
+from app.models.vod import VOD
+from app.schemas.vod import VODCreate
+from datetime import datetime
 
 router = APIRouter(prefix="/vods", tags=["vods"])
 
@@ -52,4 +55,29 @@ def delete_vod(
         raise HTTPException(status_code=403, detail="Not authorized to delete this VOD")
     db.delete(vod)
     db.commit()
-    return None 
+    return None
+
+@router.post("/webhook/recording-complete")
+async def recording_complete_webhook(request: Request, db: Session = Depends(get_db)):
+    data = None
+    try:
+        data = await request.json()
+    except Exception:
+        data = await request.form()
+    stream_key = data.get("name") or data.get("stream_key")
+    file_path = data.get("path") or data.get("file_path")
+    if not stream_key or not file_path:
+        raise HTTPException(status_code=400, detail="Missing stream_key or file_path")
+    stream = db.query(Stream).filter(Stream.stream_key == stream_key).first()
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    vod = VOD(
+        stream_id=stream.id,
+        file_path=file_path.lstrip("/"),
+        created_at=datetime.utcnow(),
+        is_public=True
+    )
+    db.add(vod)
+    db.commit()
+    db.refresh(vod)
+    return {"id": vod.id, "file_path": vod.file_path} 
