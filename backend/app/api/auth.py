@@ -17,7 +17,7 @@ def get_db():
     finally:
         db.close()
 
-@router.post("/register", response_model=UserRead)
+@router.post("/register")
 def register(user_in: UserCreate, db: Session = Depends(get_db)):
     try:
         validate_password_complexity(user_in.password)
@@ -44,7 +44,10 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
         log_auth_event("register_failed", user_in.email, "Registration failed")
         raise HTTPException(status_code=400, detail="Registration failed")
     log_auth_event("register_success", user_in.email)
-    return db_user
+    # Issue tokens on registration
+    access_token = create_access_token({"sub": db_user.email, "role": db_user.role})
+    refresh_token = create_refresh_token(db_user.email)
+    return {"access_token": access_token, "token_type": "bearer", "refresh_token": refresh_token}
 
 @router.post("/login")
 def login(user_in: UserCreate, db: Session = Depends(get_db)):
