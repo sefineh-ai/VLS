@@ -2,11 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Body, Requ
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.schemas.stream import StreamCreate, StreamUpdate, StreamRead
-from app.models import Stream, StreamStatus, User, UserRole
+from app.models import Stream, StreamStatus, User, UserRole, ChatBan, ChatMessage
 from app.db.session import SessionLocal
 from app.services.auth import get_current_user, require_roles
 import secrets
 from app.core.config import get_settings
+from app.schemas.chat import ChatBanCreate, ChatBanRead, ChatMessageRead
 
 settings = get_settings()
 
@@ -166,4 +167,48 @@ async def webhook_stream_stop(request: Request, db: Session = Depends(get_db)):
     stream.status = StreamStatus.ended
     db.commit()
     db.refresh(stream)
-    return {"id": stream.id, "status": stream.status} 
+    return {"id": stream.id, "status": stream.status}
+
+@router.post("/{stream_id}/ban", response_model=ChatBanRead)
+def ban_or_mute_user(
+    stream_id: int,
+    ban_in: ChatBanCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # Only owner, admin, or (future) moderator can ban/mute
+    stream = db.query(Stream).filter(Stream.id == stream_id).first()
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    if stream.owner_id != current_user.id and current_user.role != UserRole.admin:
+        raise HTTPException(status_code=403, detail="Not authorized to ban/mute users")
+    ban = db.query(ChatBan).filter(ChatBan.stream_id == stream_id, ChatBan.user_id == ban_in.user_id).first()
+    if not ban:
+        ban = ChatBan(stream_id=stream_id, user_id=ban_in.user_id)
+        db.add(ban)
+    ban.is_banned = ban_in.is_banned
+    ban.is_muted = ban_in.is_muted
+    db.commit()
+    db.refresh(ban)
+    return ban
+
+@router.post("/{stream_id}/chat/{message_id}/delete", response_model=ChatMessageRead)
+def delete_chat_message(
+    stream_id: int,
+    message_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # Only owner, admin, or (future) moderator can delete
+    stream = db.query(Stream).filter(Stream.id == stream_id).first()
+    if not stream:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    if stream.owner_id != current_user.id and current_user.role != UserRole.admin:
+        raise HTTPException(status_code=403, detail="Not authorized to delete messages")
+    message = db.query(ChatMessage).filter(ChatMessage.id == message_id, ChatMessage.stream_id == stream_id).first()
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    message.is_deleted = True
+    db.commit()
+    db.refresh(message)
+    return ChatMessageRead.model_validate(message) 
